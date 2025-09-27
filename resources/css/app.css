@@ -1,0 +1,66 @@
+@import './reset.css';
+@import './base.css';
+/*@import './2fa.css'; 2FA jetstream*/
+@import './buttons.css';
+@import './cards.css';
+@import './modals.css';
+@import './inputs.css';
+@import './messages.css';
+@import './datatable.css';
+@import './tooltip.css';
+@import './dropdown.css';
+@import './accordion.css';
+@import './pagination.css';
+@import './tabs.css';
+@import './widgets.css';
+@import './tags.css';
+@import './loader.css';
+@import './animations.css';
+@import './print.css';
+
+[x-cloak] {
+    display: none;
+}
+
+.logo-text {
+  font-weight: 900;
+  font-size: 1.5rem;
+}
+
+.dataTable-col-date {
+	width: unset;
+}
+.infoTable-buttons.ta-c {
+	text-align: center;
+}
+
+.infoTable-stats {
+	table-layout: fixed;
+}
+.infoTable .wstatus {
+	width: 5.75rem;
+	padding: 0.25rem .5rem;
+}
+.infoTable .w6 {
+	width: 6rem;
+}
+.infoTable .w65 {
+	width: 6.5rem;
+}
+.infoTable .w9 {
+	width: 9rem;
+}
+
+/* charts */
+.graph-wrapper-cjs {
+	height: 250px;
+}
+@media screen and (max-width: 700px) {
+	.graph-wrapper-cjs {
+		height: 200px;
+	}
+}
+
+.fz1 {
+	font-size: 1rem;
+}

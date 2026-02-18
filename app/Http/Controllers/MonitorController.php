@@ -247,11 +247,11 @@ class MonitorController extends Controller
 			->where('created_at', '>=', now()->subMonths(12)->startOfDay())
 			->selectRaw('
 				DATE(created_at) as date,
-				ROUND(SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) / COUNT(*) * 100, 2) as success_rate,
+				ROUND(SUM(status = 200) / COUNT(*) * 100, 2) as success_rate,
 				ROUND(AVG(duration), 0) as avg_duration
 			')
 			->groupByRaw('DATE(created_at)')
-			->orderByRaw('DATE(created_at) ASC')
+			->orderByRaw('date ASC')
 			->get();
 
 		return $dailyStats;
@@ -259,7 +259,7 @@ class MonitorController extends Controller
 
 	public function getStats(Website $website) {
 		$attempts = $website->attempts()
-			->selectRaw('YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as total, SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) as ok, AVG(duration) as avg_duration')
+			->selectRaw('YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as total, SUM(status = 200) as ok, AVG(duration) as avg_duration')
 			->groupByRaw('YEAR(created_at), MONTH(created_at)')
 			->orderByRaw('YEAR(created_at) DESC, MONTH(created_at) DESC')
 			->get();
@@ -322,7 +322,7 @@ class MonitorController extends Controller
 				WEEK(created_at, 3) as week,
 				DAY(created_at) as day,
 				COUNT(*) as total,
-				SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) as ok,
+				SUM(status = 200) as ok,
 				AVG(duration) as avg_duration
 			')
 			->whereBetween('created_at', [$startDate, $endDate])
@@ -522,23 +522,29 @@ class MonitorController extends Controller
 		$start = $monthly ? Carbon::now()->startOfMonth()->subMonth() : Carbon::now()->startOfDay()->subDay();
 		$end = $monthly ? Carbon::now()->startOfMonth()->subSecond() : Carbon::now()->startOfDay()->subSecond();
 
+		$downtimesSubquery = Downtime::select(
+				'website_id',
+				DB::raw('COUNT(*) as downtimes_count')
+			)
+			->whereBetween('created_at', [$start, $end])
+			->groupBy('website_id');
+
 		$report = Attempt::select(
 				'attempts.website_id',
 				DB::raw('COUNT(attempts.id) as attempts'),
-				DB::raw('SUM(CASE WHEN attempts.status = 200 THEN 1 ELSE 0 END) as ok'),
+				DB::raw('SUM(attempts.status = 200) as ok'),
 				DB::raw('ROUND(AVG(attempts.duration)) as avg_duration'),
-				DB::raw('COUNT(DISTINCT downtimes.id) as downtimes_count')
+				DB::raw('COALESCE(MAX(d.downtimes_count), 0) as downtimes_count')
 			)
-			->leftJoin('downtimes', function($join) use ($start, $end) {
-				$join->on('downtimes.website_id', '=', 'attempts.website_id')->whereBetween('downtimes.created_at', [$start, $end]);
+			->leftJoinSub($downtimesSubquery, 'd', function($join) {
+				$join->on('attempts.website_id', '=', 'd.website_id');
 			})
 			->whereBetween('attempts.created_at', [$start, $end])
 			->groupBy('attempts.website_id')
 			->with('website:id,name,url,active')
-			->get(['id', 'status', 'duration'])
+			->get()
 			->map(function ($row) {
 				$row->availability = $row->attempts > 0 ? round(($row->ok / $row->attempts) * 100, 2) : 0;
-
 				return $row;
 			});
 

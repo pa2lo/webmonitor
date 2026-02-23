@@ -7,6 +7,7 @@ use App\Models\Attempt;
 use App\Models\Downtime;
 use App\Services\SettingsService;
 use Illuminate\Http\Request;
+use Illuminate\Http\Client\Pool;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\RateLimiter;
@@ -14,6 +15,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\MonitoringReport;
+use GuzzleHttp\TransferStats;
 
 class MonitorController extends Controller
 {
@@ -103,134 +105,22 @@ class MonitorController extends Controller
 	}
 
 	public function checkSite(Website $website, $setDowntime = false) {
-		$start = microtime(true);
-		$statusCode = 0;
-		$body = null;
-		$phraseFound = false;
-		$isRedirect = null;
+		$duration = 0;
+		$effectiveUri = '';
 
 		try {
-			$response = Http::timeout(+$website->timeout)->get($website->url);
+			$response = Http::withOptions([
+				'on_stats' => function (TransferStats $stats) use (&$duration, &$effectiveUri) {
+					$duration = round($stats->getTransferTime() * 1000);
+					$effectiveUri = (string) $stats->getEffectiveUri();
+				}
+			])->timeout($website->timeout)->get($website->url);
 
-			$statusCode = $response->status();
-			$html = $response->body();
-			$phraseFound = $statusCode == 200 && str_contains($html, $website->phrase);
-
-			$isRedirect = rtrim((string) $response->transferStats->getEffectiveUri(), '/') !== rtrim($website->url, '/') ? true : false;
-
-			if ($statusCode != 200) $body = $html;
 		} catch (ConnectionException $e) {
-			$statusCode = 600;
-			$body = $e->getMessage();
-		} catch (\Exception $e) {
-			$statusCode = 700;
-			$body = $e->getMessage();
+			$response = $e;
 		}
 
-		$duration = round((microtime(true) - $start) * 1000);
-
-		$newStatus = $statusCode;
-		if ($statusCode == 200 && $phraseFound) $newStatus = '200+';
-
-		$newAttempt = $website->attempts()->create([
-			'status' => $statusCode,
-			'phrase' => $phraseFound,
-			'duration' => $duration,
-			'redirected' => $isRedirect,
-			'server' => 'php'
-		]);
-
-		if ($setDowntime) {
-			$ts = $newAttempt->created_at->getTimestamp();
-			if ($statusCode == 200 && !in_array($website->status, [200, '200+', null])) {
-				$latestDT = Downtime::where('website_id', $website->id)->latest()->first();
-				if (isset($latestDT->id) && $ts - $latestDT->to < 60) $latestDT->update([ 'to' => $ts ]);
-			} elseif ($statusCode != 200) {
-				if (in_array($website->status, [200, '200+'])) {
-					$this->createDowntime($website->id, $statusCode, $ts, $newAttempt->id, $body);
-				} else {
-					$latestDT = Downtime::where('website_id', $website->id)->latest()->first();
-					if (isset($latestDT->id) && $latestDT->status == $statusCode && $ts - $latestDT->to < 60) {
-						$latestDT->update([
-							'to' => $ts+60,
-							'attempts' => [...$latestDT->attempts, $newAttempt->id]
-						]);
-					} else {
-						$this->createDowntime($website->id, $statusCode, $ts, $newAttempt->id, $body);
-					}
-				}
-			}
-		}
-
-		$website->update([
-			'status' => $newStatus,
-			'attempts' => $website->attempts+1,
-			'checked_at' => time()
-		]);
-
-		return response([
-			'status_code' => $statusCode,
-			'phrase_found' => $phraseFound,
-			'response_time_ms' => $duration,
-			'is_redirected' => $isRedirect,
-			'error' => in_array($statusCode, [600, 700]) ? $body : null
-		]);
-	}
-
-	public function checkSiteBackup(Website $website, $setDowntime = false) {
-		$start = microtime(true);
-
-		try {
-			$response = Http::timeout(10)->get($website->url);
-			$duration = round((microtime(true) - $start) * 1000);
-
-			$statusCode = $response->status();
-			$html = $response->body();
-			$phraseFound = $statusCode == 200 && str_contains($html, $website->phrase);
-
-			$newStatus = $statusCode;
-			if ($statusCode == 200 && $phraseFound) $newStatus = '200+';
-
-			$newAttempt = $website->attempts()->create([
-				'status' => $statusCode,
-				'phrase' => $phraseFound,
-				'duration' => $duration
-			]);
-
-			if ($setDowntime && $statusCode != 200) {
-				$ts = time();
-				if (($website->status == 200 || $website->status == '200+')) {
-					$this->createDowntime($website->id, $statusCode, $ts, $newAttempt->id, $html);
-				} else {
-					$latestDT = Downtime::where('website_id', $website->id)->latest()->first();
-					if (isset($latestDT->id) && $latestDT->status == $statusCode && $ts - $latestDT->to < 60) {
-						$latestDT->update([
-							'to' => $ts+60,
-							'attempts' => [...$latestDT->attempts, $newAttempt->id]
-						]);
-					} else {
-						$this->createDowntime($website->id, $statusCode, $ts, $newAttempt->id, $html);
-					}
-				}
-			}
-
-			$website->update([
-				'status' => $newStatus,
-				'attempts' => $website->attempts+1,
-				'checked_at' => time()
-			]);
-		} catch (\Exception $e) {
-			return response([
-				'status' => 'error',
-				'message' => $e->getMessage(),
-			], 500);
-		}
-
-		return response([
-			'status_code' => $statusCode,
-			'phrase_found' => $phraseFound,
-			'response_time_ms' => $duration,
-		]);
+		return $this->processResponse($website, $response, $duration, $effectiveUri, false);
 	}
 
 	public function showStats(Website $website, SettingsService $settings) {
@@ -433,23 +323,117 @@ class MonitorController extends Controller
 		$key = $settings->get('cron_key');
 		if (!$key || $key != $request->key) abort(429); // should be 401 - but the key can then be guessed
 
-		$checked = null;
 		$executed = RateLimiter::attempt(
 			'check-all-sites',
 			2,
-			function() use (&$checked) {
-				$websites = Website::where('active', 1)->where('server', 'php')->get();
-				foreach ($websites as $website) {
-					$this->checkSite($website, true);
-				}
-				$checked = count($websites);
-			},
+			fn () => true,
 			60
 		);
 
 		if (!$executed) abort(429);
 
-		return $checked;
+		$websites = $websites = Website::where('active', 1)->where('server', 'php')->get();
+
+		if ($websites->isEmpty()) {
+			return 0;
+		}
+
+		$durations = [];
+		$effectiveURIs = [];
+
+		$responses = Http::pool(function (Pool $pool) use ($websites, &$durations, &$effectiveURIs) {
+			foreach ($websites as $website) {
+				$pool->as($website->id)->withOptions([
+					'on_stats' => function (TransferStats $stats) use (&$durations, &$effectiveURIs, $website) {
+						$durations[$website->id] = round($stats->getTransferTime() * 1000);
+						$effectiveURIs[$website->id] = (string) $stats->getEffectiveUri();
+					}
+				])->timeout($website->timeout)->get($website->url);
+			}
+		}, concurrency: 20);
+
+		foreach ($websites as $web) {
+			$d = $durations[$web->id] ?? 0;
+			$uri = $effectiveURIs[$web->id] ?? '';
+
+			$this->processResponse($web, $responses[$web->id], $d, $uri, true);
+		}
+
+		return $websites->count();
+	}
+
+	private function resolveStatus(Website $website, $response, $duration, $effectiveUri) {
+		if ($response instanceof ConnectionException) {
+			return [
+				'status' => $duration >= ($website->timeout * 1000) ? 600 : 700,
+				'body' => $response->getMessage(),
+				'phrase' => false,
+				'redirect' => null
+			];
+		}
+
+		$status = $response->status();
+		$html = $response->body();
+
+		return [
+			'status' => $status,
+			'body' => $status !== 200 ? $html : null,
+			'phrase' => $status === 200 && str_contains($html, $website->phrase),
+			'redirect' => $effectiveUri ? rtrim($effectiveUri, '/') !== rtrim($website->url, '/') : null
+		];
+	}
+
+	private function handleDowntime(Website $website, $newAttempt, $status, $body) {
+		if ($status == 200 && in_array($website->status, [200, '200+', null])) return;
+
+		$ts = $newAttempt->created_at->getTimestamp();
+
+		if (in_array($website->status, [200, '200+'])) {
+			return $this->createDowntime($website->id, $status, $ts, $newAttempt->id, $body);
+		}
+
+		$latestDT = Downtime::where('website_id', $website->id)->latest()->first();
+
+		if ($status == 200 && isset($latestDT->id) && $ts - $latestDT->to < 60) {
+			return $latestDT->update([ 'to' => $ts ]);
+		}
+
+		if (isset($latestDT->id) && $latestDT->status == $status && $ts - $latestDT->to < 60) {
+			$latestDT->update([
+				'to' => $ts+60,
+				'attempts' => [...$latestDT->attempts, $newAttempt->id]
+			]);
+		} else {
+			$this->createDowntime($website->id, $status, $ts, $newAttempt->id, $body);
+		}
+	}
+
+	private function processResponse($website, $response, $duration, $effectiveUri, $setDowntime = false) {
+		$result = $this->resolveStatus($website, $response, $duration, $effectiveUri);
+
+		$newAttempt = $website->attempts()->create([
+			'status' => $result['status'],
+			'phrase' => $result['phrase'],
+			'duration' => $duration,
+			'redirected' => $result['redirect'],
+			'server' => 'php'
+		]);
+
+		if ($setDowntime) $this->handleDowntime($website, $newAttempt, $result['status'], $result['body']);
+
+		$website->update([
+			'status' => $result['status'] == 200 && $result['phrase'] ? '200+' : $result['status'],
+			'attempts' => $website->attempts+1,
+			'checked_at' => time()
+		]);
+
+		return response([
+			'status_code' => $result['status'],
+			'phrase_found' => $result['phrase'],
+			'response_time_ms' => $duration,
+			'is_redirected' => $result['redirect'],
+			'error' => in_array($result['status'], [600, 700]) ? $result['body'] : null
+		]);
 	}
 
 	public function downtimeLog(Request $request) {

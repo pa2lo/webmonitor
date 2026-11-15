@@ -543,6 +543,17 @@ class MonitorController extends Controller
 	}
 
 	public function mailReportHelper($monthly, $reportsArr, $preview = false) {
+		if (!$preview) {
+			if (empty($reportsArr)) return;
+
+			$reportsArr = array_filter($reportsArr, function($r) use ($monthly) {
+				if ($monthly) return $r['frequency'] == 'monthly';
+				else return $r['frequency'] == 'daily';
+			});
+
+			if (empty($reportsArr)) return;
+		}
+
 		$start = $monthly ? Carbon::now()->startOfMonth()->subMonth() : Carbon::now()->startOfDay()->subDay();
 		$end = $monthly ? Carbon::now()->startOfMonth()->subSecond() : Carbon::now()->startOfDay()->subSecond();
 
@@ -577,15 +588,6 @@ class MonitorController extends Controller
 		if ($preview) {
 			return new MonitoringReport($title, $report);
 		}
-
-		if (empty($reportsArr)) return;
-
-		$reportsArr = array_filter($reportsArr, function($r) use ($monthly) {
-			if ($monthly) return $r['frequency'] == 'monthly';
-			else return $r['frequency'] == 'daily';
-		});
-
-		if (empty($reportsArr)) return;
 
 		foreach ($reportsArr as $rep) {
 			Mail::to($rep['email'])->send(new MonitoringReport($title, $report));

@@ -17,8 +17,9 @@ const props = defineProps({
 
 const form = useForm({
 	node_server: props.settings.node_server,
+	php_check_mode: props.settings.php_check_mode,
 	cron_key: props.settings.cron_key,
-	reports: props.settings.reports
+	reports: props.settings.reports ?? []
 })
 
 function save() {
@@ -32,6 +33,12 @@ function save() {
 		}
 	})
 }
+
+const phpCheckModes = [
+	{ title: 'Concurrent 5', value: 'concurrent_5' },
+	{ title: 'Concurrent 20', value: 'concurrent_20' },
+	{ title: 'Staggering', value: 'staggering' }
+]
 
 const nodeServerOptions = [
 	{
@@ -77,6 +84,14 @@ const mailCronUrl = computed(() => {
 				:options="nodeServerOptions"
 				v-model="form.node_server"
 				:error="form.errors.node_server"
+			/>
+			<SelectInput
+				label="PHP check technique"
+				horizontal
+				required
+				:options="phpCheckModes"
+				v-model="form.php_check_mode"
+				:error="form.errors.php_check_mode"
 			/>
 			<h3 class="divided input-note-horizontal">Availability reports</h3>
 			<template v-if="form.reports.length">

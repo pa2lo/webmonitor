@@ -14,17 +14,14 @@ class SettingsController extends Controller
 	}
 
 	public function update(Request $request, SettingsService $settings) {
-		$request->validate([
+		$validated = $request->validate([
 			'cron_key' => 'required|min:8',
 			'node_server' => 'required',
+			'php_check_mode' => 'sometimes|required|string|in:concurrent_5,concurrent_20,staggering',
             'reports' => 'nullable|array'
         ]);
 
-		$settings->updateMany([
-			'cron_key' => $request->cron_key,
-			'node_server' => $request->node_server,
-            'reports' => $request->reports
-		]);
+		$settings->updateMany($validated + ['reports' => []]);
 
 		return back()->with('message', 'success');
 	}

@@ -7,7 +7,10 @@ use App\Models\Attempt;
 use App\Models\Downtime;
 use App\Services\SettingsService;
 use Illuminate\Http\Request;
-use Illuminate\Http\Client\Pool;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\TransferException;
+use GuzzleHttp\Handler\CurlMultiHandler;
+use GuzzleHttp\Promise\Each;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\RateLimiter;
@@ -19,6 +22,9 @@ use GuzzleHttp\TransferStats;
 
 class MonitorController extends Controller
 {
+	private const CHECK_TIMEOUT_SECONDS = 50;
+	private const START_INTERVAL_NS = 300_000_000;
+
 	private $valRules = [
 		'name' =>  'required',
 		'url' =>  'required|url',
@@ -105,22 +111,47 @@ class MonitorController extends Controller
 	}
 
 	public function checkSite(Website $website, $setDowntime = false) {
+		return $this->runCheck($website, false);
+	}
+
+	private function runCheck(Website $website, bool $setDowntime, ?CurlMultiHandler $handler = null) {
 		$duration = 0;
 		$effectiveUri = '';
+		$deadline = hrtime(true) + self::CHECK_TIMEOUT_SECONDS * 1_000_000_000;
 
-		try {
-			$response = Http::withOptions([
-				'on_stats' => function (TransferStats $stats) use (&$duration, &$effectiveUri) {
-					$duration = round($stats->getTransferTime() * 1000);
-					$effectiveUri = (string) $stats->getEffectiveUri();
-				}
-			])->timeout($website->timeout)->get($website->url);
+		$request = Http::timeout(self::CHECK_TIMEOUT_SECONDS)
+			->connectTimeout(self::CHECK_TIMEOUT_SECONDS)
+			->withMiddleware(static function ($next) use ($deadline) {
+				return static function ($request, $options) use ($next, $deadline) {
+					// Guzzle starts a new transfer on redirect. Share the original deadline.
+					$remainingMs = intdiv($deadline - hrtime(true), 1_000_000);
+					if ($remainingMs < 1) {
+						throw new ConnectException('Website check timed out', $request, null, ['errno' => CURLE_OPERATION_TIMEDOUT]);
+					}
+					$options['timeout'] = $remainingMs / 1000;
+					return $next($request, $options);
+				};
+			})
+			->withOptions(['on_stats' => function (TransferStats $stats) use (&$duration, &$effectiveUri) {
+				$duration += $stats->getTransferTime() * 1000;
+				$effectiveUri = (string) $stats->getEffectiveUri();
+			}]);
 
-		} catch (ConnectionException $e) {
-			$response = $e;
+		$finish = function ($response) use ($website, $setDowntime, &$duration, &$effectiveUri) {
+			return $this->processResponse($website, $response, round($duration), $effectiveUri, $setDowntime);
+		};
+
+		if ($handler !== null) {
+			$promise = $request->async()->setHandler($handler)->get($website->url)->buildPromise();
+			return $promise->then($finish, $finish);
 		}
 
-		return $this->processResponse($website, $response, $duration, $effectiveUri, false);
+		try {
+			$response = $request->get($website->url);
+		} catch (ConnectionException | TransferException $e) {
+			$response = $e;
+		}
+		return $finish($response);
 	}
 
 	public function showStats(Website $website, SettingsService $settings) {
@@ -332,40 +363,49 @@ class MonitorController extends Controller
 
 		if (!$executed) abort(429);
 
-		$websites = $websites = Website::where('active', 1)->where('server', 'php')->get();
+		$websites = Website::where('active', 1)->where('server', 'php')->orderBy('id')->get();
+		$handler = new CurlMultiHandler(['select_timeout' => 0.01]);
+		$concurrency = match ($settings->get('php_check_mode')) {
+			'concurrent_5' => 5,
+			'concurrent_20' => 20,
+			default => null,
+		};
 
-		if ($websites->isEmpty()) {
-			return 0;
+		if ($concurrency !== null) {
+			// Create a request only when a pool slot opens, so queued sites get their full timeout.
+			$checks = $websites->lazy()->map(fn ($website) => $this->runCheck($website, true, $handler));
+			Each::ofLimitAll($checks->getIterator(), $concurrency)->wait();
+			return $websites->count();
 		}
 
-		$durations = [];
-		$effectiveURIs = [];
+		$promises = [];
+		$nextStart = hrtime(true);
 
-		$responses = Http::pool(function (Pool $pool) use ($websites, &$durations, &$effectiveURIs) {
-			foreach ($websites as $website) {
-				$pool->as($website->id)->withOptions([
-					'on_stats' => function (TransferStats $stats) use (&$durations, &$effectiveURIs, $website) {
-						$durations[$website->id] = round($stats->getTransferTime() * 1000);
-						$effectiveURIs[$website->id] = (string) $stats->getEffectiveUri();
-					}
-				])->timeout($website->timeout)->get($website->url);
+		foreach ($websites as $website) {
+			while (hrtime(true) < $nextStart) {
+				// Drive in-flight transfers and save completions between launches.
+				$handler->tick();
+				$remainingUs = intdiv($nextStart - hrtime(true), 1000);
+				if ($remainingUs > 0) usleep(min($remainingUs, 2000));
 			}
-		}, concurrency: 20);
 
-		foreach ($websites as $web) {
-			$d = $durations[$web->id] ?? 0;
-			$uri = $effectiveURIs[$web->id] ?? '';
+			$promises[] = $this->runCheck($website, true, $handler);
+			$nextStart = hrtime(true) + self::START_INTERVAL_NS;
+		}
 
-			$this->processResponse($web, $responses[$web->id], $d, $uri, true);
+		foreach ($promises as $promise) {
+			$promise->wait();
 		}
 
 		return $websites->count();
 	}
 
-	private function resolveStatus(Website $website, $response, $duration, $effectiveUri) {
-		if ($response instanceof ConnectionException) {
+	private function resolveStatus(Website $website, $response, $effectiveUri) {
+		if ($response instanceof ConnectionException || $response instanceof TransferException) {
+			$cause = $response instanceof ConnectionException ? $response->getPrevious() : $response;
+			$errno = $cause instanceof ConnectException ? ($cause->getHandlerContext()['errno'] ?? null) : null;
 			return [
-				'status' => $duration >= ($website->timeout * 1000) ? 600 : 700,
+				'status' => $errno === CURLE_OPERATION_TIMEDOUT ? 600 : 700,
 				'body' => $response->getMessage(),
 				'phrase' => false,
 				'redirect' => null
@@ -409,7 +449,7 @@ class MonitorController extends Controller
 	}
 
 	private function processResponse($website, $response, $duration, $effectiveUri, $setDowntime = false) {
-		$result = $this->resolveStatus($website, $response, $duration, $effectiveUri);
+		$result = $this->resolveStatus($website, $response, $effectiveUri);
 
 		$newAttempt = $website->attempts()->create([
 			'status' => $result['status'],

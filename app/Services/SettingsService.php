@@ -11,6 +11,7 @@ class SettingsService
 
     protected array $defaults = [
 		'node_server' => false,
+		'php_check_mode' => 'staggering',
 		'cron_key' => 'a1b2c3d4',
         'reports' => [],
     ];

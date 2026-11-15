@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, onBeforeUnmount } from 'vue'
 import { router } from '@inertiajs/vue3'
 
 import GuestLayout from '@/Layouts/GuestLayout.vue'
@@ -11,10 +11,16 @@ const props = defineProps({
 	websites: Array
 })
 
+let interval = null
+
 onMounted(() => {
-	setInterval(() => {
+	interval = setInterval(() => {
 		router.reload()
 	}, 30000)
+})
+
+onBeforeUnmount(() => {
+	clearInterval(interval)
 })
 </script>
 

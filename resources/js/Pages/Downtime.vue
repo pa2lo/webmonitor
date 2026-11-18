@@ -103,23 +103,22 @@ function showDowntimeRecords(data) {
 	dtInfo.value = {
 		site: websitesMap[data.website_id].name,
 		id: data.website_id,
+		downtimeId: data.id,
 		url: websitesMap[data.website_id].url,
 		time: formatDate(data.from, true),
-		body: data?.body ?? null
+		body: null
 	}
 	dtDataModal.value = true
 
 	axios.post('/downtimes/getRecords', {
-		ids: data.attempts
+		downtime_id: data.id
 	}).then((res) => {
-		if (res.data?.length) {
-			dtData.value = res.data
-			dtDataLoaded.value = true
-		} else {
-			dtDataModal.value = false
-			toast.error('Failed to load data')
-		}
+		if (dtInfo.value.downtimeId !== data.id) return
+		dtInfo.value.body = res.data.body
+		dtData.value = res.data.records
+		dtDataLoaded.value = true
 	}).catch((err) => {
+		if (dtInfo.value.downtimeId !== data.id) return
 		console.log(err)
 		dtDataModal.value = false
 		toast.error('Failed to load data')

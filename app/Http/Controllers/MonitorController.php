@@ -361,7 +361,7 @@ class MonitorController extends Controller
 			$query->where('website_id', request('website_id'));
 		})->when(request('status'), function ($query) {
 			$query->whereIn('status', request('status'));
-		})->orderBy('from', 'desc')->paginate(20)->withQueryString();
+		})->orderBy('from', 'desc')->paginate(20, ['id', 'website_id', 'status', 'from', 'to'])->withQueryString();
 		$websites = Website::get(['id', 'name', 'url']);
 		$statuses = Downtime::distinct()->pluck('status');
 
@@ -374,13 +374,16 @@ class MonitorController extends Controller
 	}
 
 	public function getDowntimeRecords(Request $request) {
-		$request->validate([
-			'ids' => 'array'
+		$data = $request->validate([
+			'downtime_id' => 'required|integer'
 		]);
 
-		$attempts = Attempt::whereIn('id', $request->ids)->get();
+		$downtime = Downtime::findOrFail($data['downtime_id'], ['body', 'attempts']);
 
-		return response($attempts);
+		return response()->json([
+			'body' => $downtime->body,
+			'records' => Attempt::whereIn('id', $downtime->attempts ?? [])->get(),
+		]);
 	}
 
 	public function status() {

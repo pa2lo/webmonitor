@@ -16,7 +16,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\MonitoringReport;
 use GuzzleHttp\TransferStats;
@@ -390,7 +389,7 @@ class MonitorController extends Controller
 		]);
 	}
 
-	public function mailReport(Request $request, SettingsService $settings) {
+	public function mailReport(Request $request, SettingsService $settings, WebsiteStats $stats) {
 		$settingsData = $settings->only(['cron_key', 'reports']);
 
 		if (!isset($settingsData['cron_key']) || $settingsData['cron_key'] != $request->key) abort(429); // should be 401 - but the key can then be guessed
@@ -400,8 +399,8 @@ class MonitorController extends Controller
 		$showPreview = request('preview');
 
 		if ($showPreview) {
-			if ($showPreview == 1) return $this->mailReportHelper(false, $settingsData['reports'], $showPreview);
-			elseif ($showPreview == 2) return $this->mailReportHelper(true, $settingsData['reports'], $showPreview);
+			if ($showPreview == 1) return $this->mailReportHelper($stats, false, $settingsData['reports'], $showPreview);
+			elseif ($showPreview == 2) return $this->mailReportHelper($stats, true, $settingsData['reports'], $showPreview);
 			else abort(400);
 		}
 
@@ -417,13 +416,13 @@ class MonitorController extends Controller
 
 		if (!$executed || !$shouldRun) abort(429);
 
-		$this->mailReportHelper(false, $settingsData['reports']);
-		if ($sendMonthReport) $this->mailReportHelper(true, $settingsData['reports']);
+		$this->mailReportHelper($stats, false, $settingsData['reports']);
+		if ($sendMonthReport) $this->mailReportHelper($stats, true, $settingsData['reports']);
 
 		return;
 	}
 
-	public function mailReportHelper($monthly, $reportsArr, $preview = false) {
+	public function mailReportHelper(WebsiteStats $stats, $monthly, $reportsArr, $preview = false) {
 		if (!$preview) {
 			if (empty($reportsArr)) return;
 
@@ -435,34 +434,10 @@ class MonitorController extends Controller
 			if (empty($reportsArr)) return;
 		}
 
-		$start = $monthly ? Carbon::now()->startOfMonth()->subMonth() : Carbon::now()->startOfDay()->subDay();
-		$end = $monthly ? Carbon::now()->startOfMonth()->subSecond() : Carbon::now()->startOfDay()->subSecond();
-
-		$downtimesSubquery = Downtime::select(
-				'website_id',
-				DB::raw('COUNT(*) as downtimes_count')
-			)
-			->whereBetween('created_at', [$start, $end])
-			->groupBy('website_id');
-
-		$report = Attempt::select(
-				'attempts.website_id',
-				DB::raw('COUNT(attempts.id) as attempts'),
-				DB::raw('SUM(attempts.status = 200) as ok'),
-				DB::raw('ROUND(AVG(attempts.duration)) as avg_duration'),
-				DB::raw('COALESCE(MAX(d.downtimes_count), 0) as downtimes_count')
-			)
-			->leftJoinSub($downtimesSubquery, 'd', function($join) {
-				$join->on('attempts.website_id', '=', 'd.website_id');
-			})
-			->whereBetween('attempts.created_at', [$start, $end])
-			->groupBy('attempts.website_id')
-			->with('website:id,name,url,active')
-			->get()
-			->map(function ($row) {
-				$row->availability = $row->attempts > 0 ? round(($row->ok / $row->attempts) * 100, 2) : 0;
-				return $row;
-			});
+		$today = Carbon::now()->toImmutable()->startOfDay();
+		$end = $monthly ? $today->startOfMonth() : $today;
+		$start = $monthly ? $end->subMonth() : $end->subDay();
+		$report = $stats->report($start, $end);
 
 		$title = $monthly ? "Monthly monitoring report - {$start->format('m/Y')}" : "Daily monitoring report - {$start->format('d.m.Y')}";
 

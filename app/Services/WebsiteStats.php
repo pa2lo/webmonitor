@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Attempt;
 use App\Models\Website;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
@@ -85,6 +86,39 @@ class WebsiteStats
             'ok' => $days->sum('success_count'),
             'avg_duration' => $measured ? round($days->sum('duration_sum_ms') / $measured) : 0,
         ];
+    }
+
+    public function report(CarbonImmutable $start, CarbonImmutable $end): Collection
+    {
+        $completed = $this->settings->get(self::CHECKPOINT);
+        $days = null;
+        $liveStart = $start;
+        if ($completed !== null && $completed >= $start->toDateString()) {
+            $days = DB::table('website_daily_stats')
+                ->select('website_id', 'date', 'attempt_count', 'success_count', 'duration_sum_ms', 'duration_count')
+                ->where('date', '>=', $start->toDateString())->where('date', '<', $end->toDateString())
+                ->where('date', '<=', $completed);
+            $liveStart = CarbonImmutable::parse($completed)->addDay();
+        }
+
+        if ($liveStart < $end) {
+            $live = $this->rawDays()->where('created_at', '>=', $liveStart)->where('created_at', '<', $end);
+            $days = $days ? $days->unionAll($live) : $live;
+        }
+
+        $downtimes = DB::table('downtimes')->select('website_id')->selectRaw('COUNT(*) as downtimes_count')
+            ->where('created_at', '>=', $start)->where('created_at', '<', $end)->groupBy('website_id');
+
+        return Attempt::query()->fromSub($days, 'days')
+            ->leftJoinSub($downtimes, 'd', 'days.website_id', '=', 'd.website_id')
+            ->select('days.website_id')
+            ->selectRaw('SUM(attempt_count) as attempts, SUM(success_count) as ok,
+                ROUND(1.0 * SUM(duration_sum_ms) / NULLIF(SUM(duration_count), 0)) as avg_duration,
+                COALESCE(MAX(downtimes_count), 0) as downtimes_count')
+            ->groupBy('days.website_id')->with('website:id,name,url,active')->get()
+            ->each(function ($row) {
+                $row->availability = $row->attempts > 0 ? round(100 * $row->ok / $row->attempts, 2) : 0;
+            });
     }
 
     public function overview(Website $website): array

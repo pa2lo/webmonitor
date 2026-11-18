@@ -3,7 +3,8 @@ import WebsiteChart from './WebsiteChart.vue'
 import { sharedChartOptions, sharedChartDataset1, sharedChartDataset2 } from '@/Utils/consts'
 
 const props = defineProps({
-	data: Object
+	data: Object,
+	algorithmUpdates: Object
 })
 
 const options = structuredClone(sharedChartOptions)
@@ -64,5 +65,5 @@ options.plugins.tooltip.callbacks.label = ctx => ctx.dataset.label + ': ' + (ctx
 </script>
 
 <template>
-	<WebsiteChart :data :options />
+	<WebsiteChart :data :options :algorithm-updates="algorithmUpdates" />
 </template>

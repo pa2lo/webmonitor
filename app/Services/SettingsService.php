@@ -14,12 +14,19 @@ class SettingsService
 		'php_check_mode' => 'staggering',
 		'cron_key' => 'a1b2c3d4',
         'reports' => [],
+		'website_stats_completed_through' => '2025-01-01'
     ];
 
 	public function get(string $key, $default = null)
     {
         $all = $this->all();
         return $all[$key] ?? ($default ?? $this->defaults[$key] ?? null);
+    }
+
+    public function delete(string $key): void
+    {
+        Setting::whereKey($key)->delete();
+        $this->cache = null;
     }
 
 	public function only(array $keys): array

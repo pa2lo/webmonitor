@@ -14,8 +14,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 	Route::post('websites', [MonitorController::class, 'store']);
 	Route::post('websites/{website}/switch', [MonitorController::class, 'switchActive']);
 	Route::get('websites/{website}', [MonitorController::class, 'showStats']);
-	Route::get('websites/{website}/dailyStats', [MonitorController::class, 'getDailyStats']);
-	Route::get('websites/{website}/stats', [MonitorController::class, 'getStats']);
+	Route::get('websites/{website}/overview', [MonitorController::class, 'getOverview']);
 	Route::post('websites/{website}/monthData', [MonitorController::class, 'getMonthData']);
 	Route::post('websites/{website}/dayData', [MonitorController::class, 'getDayData']);
 	Route::patch('websites/{website}', [MonitorController::class, 'update']);
@@ -31,6 +30,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
 /* cron URLs */
 Route::get('checkAll', [MonitorController::class, 'checkAll']);
+Route::get('summarizeDailyStats', [MonitorController::class, 'summarizeDailyStats']);
 Route::get('mailReport', [MonitorController::class, 'mailReport']);
 
 require __DIR__.'/settings.php';

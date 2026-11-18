@@ -64,3 +64,60 @@
 .fz1 {
 	font-size: 1rem;
 }
+
+/* graph markers */
+.graph-wrapper-cjs {
+	position: relative;
+}
+.algorithm-markers {
+	position: absolute;
+	inset-inline: 0;
+	pointer-events: none;
+}
+.algorithm-marker {
+	position: absolute;
+	display: grid;
+	place-items: center;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	transform: translate(-50%, -50%);
+	pointer-events: auto;
+	cursor: pointer;
+}
+.algorithm-marker::before {
+	content: '';
+	width: 13px;
+	height: 13px;
+	border-radius: 50%;
+	background: #09bbc5;
+}
+.algorithm-marker-detail {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+	z-index: 1;
+	left: clamp(min(50%, 6rem), var(--marker-left), max(50%, 100% - 6rem));
+	bottom: 12px;
+	width: min(12rem, 100%);
+	transform: translateX(-50%);
+	padding: .375rem .5rem;
+	border-radius: .375rem;
+	background: #000c;
+	color: #fff;
+	font-size: .75rem;
+	line-height: 1rem;
+	transition: opacity .25s;
+}
+.algorithm-marker-detail time {
+	display: block;
+	font-weight: 600;
+	color: #ffbc70;
+	color: #37f5ff;
+}
+.algorithm-marker:hover + .algorithm-marker-detail {
+	opacity: 1;
+}

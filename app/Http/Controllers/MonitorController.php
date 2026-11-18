@@ -6,6 +6,7 @@ use App\Models\Website;
 use App\Models\Attempt;
 use App\Models\Downtime;
 use App\Services\SettingsService;
+use App\Services\WebsiteStats;
 use Illuminate\Http\Request;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\TransferException;
@@ -159,165 +160,45 @@ class MonitorController extends Controller
 
 		return inertia('Website', [
 			'website' => $website,
-			'hasNodeServer' => $settings->get('node_server')
+			'hasNodeServer' => $settings->get('node_server'),
+			'algorithmUpdates' => $website->server === 'php' ? (object) config('monitoring.php_algorithm_updates', []) : null,
 		]);
 	}
 
-	public function getDailyStats(Website $website) {
-		$dailyStats = $website->attempts()
-			->where('created_at', '>=', now()->subMonths(12)->startOfDay())
-			->selectRaw('
-				DATE(created_at) as date,
-				ROUND(SUM(status = 200) / COUNT(*) * 100, 2) as success_rate,
-				ROUND(AVG(duration), 0) as avg_duration
-			')
-			->groupByRaw('DATE(created_at)')
-			->orderByRaw('date ASC')
-			->get();
-
-		return $dailyStats;
+	public function getOverview(Website $website, WebsiteStats $stats) {
+		return $stats->overview($website);
 	}
 
-	public function getStats(Website $website) {
-		$attempts = $website->attempts()
-			->selectRaw('YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as total, SUM(status = 200) as ok, AVG(duration) as avg_duration')
-			->groupByRaw('YEAR(created_at), MONTH(created_at)')
-			->orderByRaw('YEAR(created_at) DESC, MONTH(created_at) DESC')
-			->get();
+	public function getMonthData(Request $request, Website $website, WebsiteStats $stats) {
+		$start = Carbon::createFromDate($request->year, $request->month, 1)->startOfMonth()->toImmutable();
 
-		$grouped = [];
-
-		foreach ($attempts as $row) {
-			$year = (int) $row->year;
-			$month = (int) ltrim($row->month, '0');
-
-			$yearIndex = null;
-			foreach ($grouped as $index => $y) {
-				if ($y['year'] === $year) {
-					$yearIndex = $index;
-					break;
-				}
-			}
-
-			if ($yearIndex === null) {
-				$grouped[] = [
-					'year' => $year,
-					'attempts' => 0,
-					'ok' => 0,
-					'avg_duration' => 0,
-					'months' => [],
-					'_duration_sum' => 0,
-					'_duration_count' => 0
-				];
-				$yearIndex = array_key_last($grouped);
-			}
-
-			$grouped[$yearIndex]['attempts'] += $row->total;
-			$grouped[$yearIndex]['ok'] += $row->ok;
-			$grouped[$yearIndex]['_duration_sum'] += $row->avg_duration * $row->total;
-			$grouped[$yearIndex]['_duration_count'] += $row->total;
-
-			$grouped[$yearIndex]['months'][] = [
-				'month' => $month,
-				'attempts' => $row->total,
-				'ok' => $row->ok,
-				'avg_duration' => round($row->avg_duration, 0)
-			];
-		}
-
-		foreach ($grouped as $year => &$data) {
-			if ($data['_duration_count'] > 0) $data['avg_duration'] = round($data['_duration_sum'] / $data['_duration_count'], 0);
-			unset($data['_duration_sum'], $data['_duration_count']);
-		}
-
-		return $grouped;
+		return response($stats->month($website, $start));
 	}
 
-	public function getMonthData(Request $request, Website $website) {
-		$startDate = Carbon::createFromDate($request->year, $request->month, 1)->startOfMonth();
-		$endDate = (clone $startDate)->endOfMonth();
+	public function summarizeDailyStats(Request $request, SettingsService $settings, WebsiteStats $stats) {
+		$key = $settings->get('cron_key');
+		if (!$key || !is_string($request->key) || !hash_equals((string) $key, $request->key)) abort(429);
 
-		 $attempts = $website->attempts()
-			->selectRaw('
-				DATE(created_at) as date,
-				WEEK(created_at, 3) as week,
-				DAY(created_at) as day,
-				COUNT(*) as total,
-				SUM(status = 200) as ok,
-				AVG(duration) as avg_duration
-			')
-			->whereBetween('created_at', [$startDate, $endDate])
-			->groupByRaw('DATE(created_at), WEEK(created_at, 3), DAY(created_at), DAYNAME(created_at)')
-			->orderBy('date', 'desc')
-			->get();
+		$executed = RateLimiter::attempt(
+			'summarize-daily-stats',
+			1,
+			fn () => true,
+			6 * 60 * 60
+		);
 
-		$weeks = [];
+		if (!$executed) abort(429);
 
-		foreach ($attempts as $row) {
-			$week = (int) $row->week;
-			$date = Carbon::parse($row->date);
-			$day = (int) $row->day;
-
-			$weekIndex = null;
-			foreach ($weeks as $i => $w) {
-				if ($w['week'] === $week) {
-					$weekIndex = $i;
-					break;
-				}
-			}
-
-			if ($weekIndex === null) {
-				$from = (clone $date)->startOfWeek(Carbon::MONDAY);
-				$to = (clone $from)->endOfWeek(Carbon::SUNDAY);
-
-				$from = $from->lessThan($startDate) ? $startDate->copy() : $from;
-				$to = $to->greaterThan($endDate) ? $endDate->copy() : $to;
-
-				$weeks[] = [
-					'week' => $week,
-					'from' => $from->format('j.n'),
-					'to' => $to->format('j.n'),
-					'attempts' => 0,
-					'ok' => 0,
-					'avg_duration' => 0,
-					'days' => [],
-					'_duration_sum' => 0,
-					'_duration_count' => 0
-				];
-				$weekIndex = array_key_last($weeks);
-			}
-
-			$weeks[$weekIndex]['attempts'] += $row->total;
-			$weeks[$weekIndex]['ok'] += $row->ok;
-			$weeks[$weekIndex]['_duration_sum'] += $row->avg_duration * $row->total;
-			$weeks[$weekIndex]['_duration_count'] += $row->total;
-
-			$weeks[$weekIndex]['days'][] = [
-				'day' => $day,
-				'weekday' => $date->dayOfWeekIso,
-				'date' => $date->format('Y-m-d'),
-				'attempts' => $row->total,
-				'ok' => $row->ok,
-				'avg_duration' => round($row->avg_duration, 0),
-			];
-		}
-
-		foreach ($weeks as &$week) {
-			if ($week['_duration_count'] > 0) {
-				$week['avg_duration'] = round($week['_duration_sum'] / $week['_duration_count'], 0);
-			}
-			unset($week['_duration_sum'], $week['_duration_count']);
-		}
-
-		return response($weeks);
+		return response(['completed_through' => $stats->summarizeThroughYesterday()]);
 	}
 
 	public function getDayData(Request $request, Website $website) {
 		$request->validate([
-			'date' => 'date_format:Y-m-d'
+			'date' => 'required|date_format:Y-m-d'
 		]);
 
-		$attempts = $website->attempts()->whereDate('created_at', $request->date)->orderBy('created_at')->get();
+		$start = Carbon::parse($request->date)->startOfDay()->toImmutable();
+		$attempts = $website->attempts()->where('created_at', '>=', $start)
+			->where('created_at', '<', $start->addDay())->orderBy('created_at')->get();
 
 		$grouped = [];
 

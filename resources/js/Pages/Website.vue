@@ -24,7 +24,8 @@ import SlideToggle from '@/Components/Elements/SlideToggle.vue'
 
 const props = defineProps({
 	website: Object,
-	hasNodeServer: Boolean
+	hasNodeServer: Boolean,
+	algorithmUpdates: Object
 })
 
 const editFormModal = ref(false)
@@ -160,7 +161,7 @@ function checkNow() {
 		}
 
 		router.reload()
-		loadStats()
+		return loadOverview()
 	}).catch((err) => {
 		toast.error('Refresh failed', {
 			message: err?.data?.message || null
@@ -173,28 +174,24 @@ function checkNow() {
 
 const chartData = ref(null)
 const dailyStats = ref([])
-const dailyStatsLoaded = ref(false)
-const stats = ref({})
+const chartRevision = ref(0)
+const stats = ref([])
 const statsLoaded = ref(false)
+let overviewRequest = 0
 
-onMounted(() => {
-	loadDailyStats()
-	loadStats()
-})
+onMounted(loadOverview)
 
-function loadDailyStats() {
-	axios.get(`/websites/${props.website.id}/dailyStats`).then((res) => {
-		dailyStats.value = res.data
+function loadOverview() {
+	const request = ++overviewRequest
+	return axios.get(`/websites/${props.website.id}/overview`).then(({ data }) => {
+		if (request !== overviewRequest) return
+		dailyStats.value = data.dailyStats
 		chartData.value = {
-			success_rate: res.data.map(s => ({x: s.date, y: s.success_rate})),
-			avg_duration: res.data.map(s => ({x: s.date, y: s.avg_duration}))
+			success_rate: data.dailyStats.map(s => ({x: s.date, y: s.success_rate})),
+			avg_duration: data.dailyStats.map(s => ({x: s.date, y: s.avg_duration}))
 		}
-		dailyStatsLoaded.value = true
-	})
-}
-function loadStats() {
-	axios.get(`/websites/${props.website.id}/stats`).then((res) => {
-		stats.value = res.data
+		chartRevision.value++
+		stats.value = data.stats
 		statsLoaded.value = true
 	})
 }
@@ -245,9 +242,9 @@ function loadStats() {
 			</p>
 			<template v-if="website.attempts > 0">
 				<h3 class="divided">Stats</h3>
-				<Loader class="line" :loading="!dailyStatsLoaded || !statsLoaded">
-					<template v-if="dailyStatsLoaded && statsLoaded">
-						<WebsiteChartDays v-if="dailyStats.length > 3" :data="chartData" />
+				<Loader class="line" :loading="!statsLoaded">
+					<template v-if="statsLoaded">
+						<WebsiteChartDays v-if="dailyStats.length > 3" :key="chartRevision" :data="chartData" :algorithm-updates="algorithmUpdates" />
 						<div class="line">
 							<div v-for="data in stats" class="dataTable-wrapper line">
 								<table class="infoTable infoTable-stats">

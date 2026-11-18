@@ -1,7 +1,7 @@
 <script setup>
-import { computed } from 'vue'
 import { useForm } from '@inertiajs/vue3'
 import { toast } from '@/Utils/toaster'
+import { formatDate } from '@/Utils/helpers'
 
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue'
 import Card from '@/Components/Elements/Card.vue'
@@ -64,12 +64,9 @@ function removeNotification(i) {
 
 const frequencyOptions =  ['Daily', 'Monthly'].map(v => ({ title: v, value: v.toLowerCase() }))
 
-const cronUrl = computed(() => {
-	return `${window.location.origin}/checkAll?key=${props.settings.cron_key}`
-})
-const mailCronUrl = computed(() => {
-	return `${window.location.origin}/mailReport?key=${props.settings.cron_key}`
-})
+function cronUrl(path) {
+	return `${window.location.origin}/${path}?key=${encodeURIComponent(props.settings.cron_key)}`
+}
 </script>
 
 <template>
@@ -133,8 +130,8 @@ const mailCronUrl = computed(() => {
 				horizontal
 				readOnly
 				copyable
-				:modelValue="cronUrl"
-				tooltip="Visit this URL with Cron Job every minute"
+				:modelValue="cronUrl('checkAll')"
+				tooltip="Run once every minute"
 			/>
 			<TextInput
 				v-if="form.reports.length"
@@ -142,9 +139,19 @@ const mailCronUrl = computed(() => {
 				horizontal
 				readOnly
 				copyable
-				:modelValue="mailCronUrl"
-				tooltip="Visit this URL with Cron Job every day"
+				:modelValue="cronUrl('mailReport')"
+				tooltip="Run once a day"
 			/>
+			<TextInput
+				label="Daily stats Cron URL"
+				horizontal
+				readOnly
+				copyable
+				:modelValue="cronUrl('summarizeDailyStats')"
+				tooltip="Run once a day after midnight in the reporting timezone"
+			>
+				<span v-if="settings.website_stats_completed_through && settings.website_stats_completed_through != '2025-01-01'">Daily stats completed throught <strong>{{ formatDate(settings.website_stats_completed_through, false, false) }}</strong></span>
+			</TextInput>
 			<template #buttons>
 				<Button type="submit" :loading="form.processing">Save settings</Button>
 			</template>

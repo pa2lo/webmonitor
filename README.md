@@ -32,3 +32,25 @@ Once enabled, you’ll gain access to Node settings for each monitored URL, allo
 
 - Choose whether to use the **PHP** or **Node.js** server for monitoring
 - Configure the **number of requests per attempt** for more accurate availability checks
+
+## PHP monitoring updates
+
+The website overview chart marks PHP monitoring algorithm updates on its date axis. Hover a dot to see what changed. Add entries to [`config/monitoring.php`](config/monitoring.php) under `php_algorithm_updates`, using the deployment date (`YYYY-MM-DD`) in the reporting timezone.
+
+## Daily website statistics - update 11/26
+
+1. Run the schema migration from the application directory.
+
+   ```sh
+   php artisan migrate
+   ```
+
+2. Build the existing daily summaries through yesterday.
+
+   ```sh
+   php artisan stats:backfill
+   ```
+
+   Run the same command again to resume after an interruption. The stats page includes outstanding raw history while backfill is in progress.
+
+3. Create a **CRON job** to call **Daily stats Cron URL** (found in **Settings**) once a day after midnight, within the same time zone as `APP_TIMEZONE`.
